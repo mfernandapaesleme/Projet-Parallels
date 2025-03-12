@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <fstream>
 
 #include "model.hpp"
 #include "display.hpp"
@@ -202,14 +203,58 @@ int main( int nargs, char* args[] )
     auto simu = Model( params.length, params.discretization, params.wind,
                        params.start);
     SDL_Event event;
-    while (simu.update())
+
+    // Utilisation d'un fichier txt pour analyser les temps
+    std::ofstream file("temps.txt");
+    file << "TimeStep Temps_Avancement Temps_Affichage Temps_Simulation\n"; 
+
+     // Mesure temps total de la simulation
+    auto start_total = std::chrono::high_resolution_clock::now();
+
+    while (true)
     {
+        while (SDL_PollEvent(&event))
+            if (event.type == SDL_QUIT)
+                return EXIT_SUCCESS;
+
+        // Mesure du temps de l'avancement
+        auto start_update = std::chrono::high_resolution_clock::now();
+        bool isrunning = simu.update();  
+        auto end_update = std::chrono::high_resolution_clock::now();
+
+        if(!isrunning)
+            break;
+        std::chrono::duration<double> elapsed_update = end_update - start_update;
+        //std::cout << "Temps de l'avancement du feu: " << elapsed_update.count() << " secondes\n";
+
         if ((simu.time_step() & 31) == 0) 
             std::cout << "Time step " << simu.time_step() << "\n===============" << std::endl;
-        displayer->update( simu.vegetal_map(), simu.fire_map() );
-        if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
-            break;
-        std::this_thread::sleep_for(0.1s);
-    }
+
+        // Mesure du temps de l'affichage
+        auto start_display = std::chrono::high_resolution_clock::now();
+        displayer->update(simu.vegetal_map(), simu.fire_map());
+        auto end_display = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_display = end_display - start_display;
+        // std::cout << "Temps de l'affichage: " << elapsed_display.count() << " secondes\n";
+
+        /* if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
+            break; */
+
+        // std::this_thread::sleep_for(0.1s);
+        auto end_partial = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_partial = end_partial - start_total;
+        // std::cout << "Temps de la simulation: " << elapsed_total.count() << " secondes\n";
+
+        // Écrire les temps dans le fichier
+        file << simu.time_step() << " " << elapsed_update.count() << " " 
+            << elapsed_display.count() << " " 
+            << elapsed_partial.count() << "\n";
+        }
+    file.close();  
+    // std::this_thread::sleep_for(0.1s);
+    auto end_total = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_total = end_total- start_total;
+    std::cout << "Temps de total la simulation: " << elapsed_total.count() << " secondes\n";
+
     return EXIT_SUCCESS;
 }
