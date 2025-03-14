@@ -61,11 +61,11 @@ bool Model::update()
         return false;
 
     std::vector<double> random_values(fire_front_keys.size());
-    /* #pragma omp parallel for
+    #pragma omp parallel for
     for (size_t i = 0; i < fire_front_keys.size(); ++i)
     {
         random_values[i] = pseudo_random(fire_front_keys[i], m_time_step);
-    } */
+    }
 
     std::unordered_map<std::size_t, std::uint8_t> next_front;
     std::vector<std::pair<std::size_t, std::uint8_t>> local_updates;
@@ -81,73 +81,43 @@ bool Model::update()
             LexicoIndices coord = get_lexicographic_from_index(key);
             double power = log_factor(value);
 
-            if (coord.row < m_geometry-1)
+            if (coord.row < m_geometry - 1)
             {
-                double tirage      = pseudo_random(fire_front_keys[i]+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[fire_front_keys[i]+m_geometry];
-                double correction  = power*log_factor(green_power);
-                if (tirage < alphaSouthNorth*p1*correction)
+                double green_power = m_vegetation_map[key + m_geometry];
+                if (random_values[i] < p1 * power * log_factor(green_power))
                 {
-                    m_fire_map[fire_front_keys[i] + m_geometry]   = 255.;
-                    next_front[fire_front_keys[i] + m_geometry] = 255.;
+                    thread_updates.emplace_back(key + m_geometry, 255u);
                 }
             }
-
             if (coord.row > 0)
             {
-                double tirage      = pseudo_random(fire_front_keys[i]*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[fire_front_keys[i] - m_geometry];
-                double correction  = power*log_factor(green_power);
-                if (tirage < alphaNorthSouth*p1*correction)
+                double green_power = m_vegetation_map[key - m_geometry];
+                if (random_values[i] < p1 * power * log_factor(green_power))
                 {
-                    m_fire_map[fire_front_keys[i] - m_geometry] = 255.;
-                    next_front[fire_front_keys[i] - m_geometry] = 255.;
+                    thread_updates.emplace_back(key - m_geometry, 255u);
                 }
             }
-
-            if (coord.column < m_geometry-1)
+            if (coord.column < m_geometry - 1)
             {
-                double tirage      = pseudo_random(fire_front_keys[i]*13427*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[fire_front_keys[i]+1];
-                double correction  = power*log_factor(green_power);
-                if (tirage < alphaEastWest*p1*correction)
+                double green_power = m_vegetation_map[key + 1];
+                if (random_values[i] < p1 * power * log_factor(green_power))
                 {
-                    m_fire_map[fire_front_keys[i] + 1] = 255.;
-                    next_front[fire_front_keys[i]+ 1] = 255.;
+                    thread_updates.emplace_back(key + 1, 255u);
                 }
             }
-
             if (coord.column > 0)
             {
-                double tirage      = pseudo_random(fire_front_keys[i]*13427*13427*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[fire_front_keys[i] - 1];
-                double correction  = power*log_factor(green_power);
-                if (tirage < alphaWestEast*p1*correction)
+                double green_power = m_vegetation_map[key - 1];
+                if (random_values[i] < p1 * power * log_factor(green_power))
                 {
-                    m_fire_map[fire_front_keys[i] - 1] = 255.;
-                    next_front[fire_front_keys[i]- 1] = 255.;
+                    thread_updates.emplace_back(key - 1, 255u);
                 }
             }
-            // Si le feu est à son max,
-            if (value == 255)
-            {   // On regarde si il commence à faiblir pour s'éteindre au bout d'un moment :
-                double tirage = pseudo_random(fire_front_keys[i] * 52513 + m_time_step, m_time_step);
-                if (tirage < p2)
-                {
-                    m_fire_map[fire_front_keys[i]] >>= 1;
-                    next_front[fire_front_keys[i]] >>= 1;
-                }
-            }
+
+            if (value == 255 && random_values[i] < p2)
+                thread_updates.emplace_back(key, value >> 1);
             else
-            {
-                // Foyer en train de s'éteindre.
-                m_fire_map[fire_front_keys[i]] >>= 1;
-                next_front[fire_front_keys[i]] >>= 1;
-                if (next_front[fire_front_keys[i]] == 0)
-                {
-                    next_front.erase(fire_front_keys[i]);
-                }
-            }
+                thread_updates.emplace_back(key, value >> 1);
         }
         
         #pragma omp critical
