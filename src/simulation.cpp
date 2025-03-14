@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <omp.h>
 #include <fstream>
 
 #include "model.hpp"
@@ -18,6 +19,7 @@ struct ParamsType
     unsigned discretization{20u};
     std::array<double,2> wind{0.,0.};
     Model::LexicoIndices start{10u,10u};
+    int num_threads{1};
 };
 
 void analyze_arg( int nargs, char* args[], ParamsType& params )
@@ -137,6 +139,18 @@ void analyze_arg( int nargs, char* args[], ParamsType& params )
         analyze_arg(nargs-1, &args[1], params);
         return;
     }
+    // Nova opção para número de threads
+    if (key == "-t"s || key == "--threads"s)
+    {
+        if (nargs < 2)
+        {
+            std::cerr << "Manque une valeur pour le nombre de threads OpenMP !" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        params.num_threads = std::stoi(args[1]);
+        analyze_arg(nargs-2, &args[2], params);
+        return;
+    }
 }
 
 ParamsType parse_arguments( int nargs, char* args[] )
@@ -152,7 +166,8 @@ R"RAW(Usage : simulation [option(s)]
     -n, --number_of_cases=N     Nombre n de cases par direction pour la discrétisation
     -w, --wind=VX,VY            Définit le vecteur vitesse du vent (pas de vent par défaut).
     -s, --start=COL,ROW         Définit les indices I,J de la case où commence l'incendie (milieu de la carte par défaut)
-)RAW";
+    -t, --threads=N             Définit le nombre de threads OpenMP à utiliser (défaut: 1)
+    )RAW";
         exit(EXIT_SUCCESS);
     }
     ParamsType params;
@@ -180,6 +195,12 @@ bool check_params(ParamsType& params)
         std::cerr << "[ERREUR FATALE] Mauvais indices pour la position initiale du foyer" << std::endl;
         flag = false;
     }
+
+     if (params.num_threads <= 0)
+    {
+        std::cerr << "[ERREUR FATALE] Le nombre de threads doit être positif et non nul !" << std::endl;
+        flag = false;
+    }
     
     return flag;
 }
@@ -190,14 +211,24 @@ void display_params(ParamsType const& params)
               << "\tTaille du terrain : " << params.length << std::endl 
               << "\tNombre de cellules par direction : " << params.discretization << std::endl 
               << "\tVecteur vitesse : [" << params.wind[0] << ", " << params.wind[1] << "]" << std::endl
-              << "\tPosition initiale du foyer (col, ligne) : " << params.start.column << ", " << params.start.row << std::endl;
-}
+              << "\tPosition initiale du foyer (col, ligne) : " << params.start.column << ", " << params.start.row << std::endl
+              << "\tNombre de threads OpenMP : " << params.num_threads << std::endl;
+            }
 
 int main( int nargs, char* args[] )
 {
     auto params = parse_arguments(nargs-1, &args[1]);
     display_params(params);
     if (!check_params(params)) return EXIT_FAILURE;
+
+    // Definir o número de threads para OpenMP
+    omp_set_num_threads(std::min(params.num_threads, omp_get_max_threads()));
+    
+    // Informações sobre hardware (número de núcleos físicos)
+    std::cout << "Information sur l'hardware:" << std::endl;
+    std::cout << "\tNúmero máximo de threads OpenMP disponíveis: " << omp_get_max_threads() << std::endl;
+    std::cout << "\tNúmero de processadores físicos: " << omp_get_num_procs() << std::endl;
+
 
     auto displayer = Displayer::init_instance( params.discretization, params.discretization );
     auto simu = Model( params.length, params.discretization, params.wind,
@@ -234,6 +265,7 @@ int main( int nargs, char* args[] )
         auto start_display = std::chrono::high_resolution_clock::now();
         displayer->update(simu.vegetal_map(), simu.fire_map());
         auto end_display = std::chrono::high_resolution_clock::now();
+        std::this_thread::sleep_for(50ms); // Adicione esta linha
         std::chrono::duration<double> elapsed_display = end_display - start_display;
         // std::cout << "Temps de l'affichage: " << elapsed_display.count() << " secondes\n";
 
