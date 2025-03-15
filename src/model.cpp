@@ -1,8 +1,6 @@
 #include <stdexcept>
 #include <cmath>
 #include <iostream>
-#include <vector>
-#include <omp.h>
 #include "model.hpp"
 
 
@@ -30,8 +28,7 @@ Model::Model( double t_length, unsigned t_discretization, std::array<double,2> t
         m_wind_speed(std::sqrt(t_wind[0]*t_wind[0] + t_wind[1]*t_wind[1])),
         m_max_wind(t_max_wind),
         m_vegetation_map(t_discretization*t_discretization, 255u),
-        m_fire_map(t_discretization*t_discretization, 0u),
-        m_time_step(0)
+        m_fire_map(t_discretization*t_discretization, 0u)
 {
     if (t_discretization == 0)
     {
@@ -74,155 +71,106 @@ Model::Model( double t_length, unsigned t_discretization, std::array<double,2> t
         alphaSouthNorth = 1. - std::abs(m_wind[1]/t_max_wind);
     }
 }
-
-bool Model::update()
+// --------------------------------------------------------------------------------------------------------------------
+bool 
+Model::update()
 {
-    // Extrair todas as chaves do m_fire_front para um vetor
-    std::vector<std::size_t> fire_front_keys;
-    fire_front_keys.reserve(m_fire_front.size());
-    for (const auto& f : m_fire_front) {
-        fire_front_keys.push_back(f.first);
-    }
-
-    // Criar vetores temporários para armazenar as novas células em chamas
-    // e as células que se alteraram
-    std::vector<std::size_t> new_fire_cells;
-    std::vector<std::pair<std::size_t, std::uint8_t>> updated_cells;
-    
-    // Reservar espaço para evitar realocações
-    new_fire_cells.reserve(fire_front_keys.size() * 4); // No máximo 4 vizinhos por célula
-    updated_cells.reserve(fire_front_keys.size());
-
-    // Processar cada célula em paralelo, coletando mudanças em vez de aplicá-las
-    #pragma omp parallel
+    auto next_front = m_fire_front;
+    for (auto f : m_fire_front)
     {
-        // Vetores locais para cada thread
-        std::vector<std::size_t> local_new_fire;
-        std::vector<std::pair<std::size_t, std::uint8_t>> local_updates;
+        // Récupération de la coordonnée lexicographique de la case en feu :
+        LexicoIndices coord = get_lexicographic_from_index(f.first);
+        // Et de la puissance du foyer
+        double        power = log_factor(f.second);
 
-        // Pré-alocação para evitar realocações dentro do loop
-        local_new_fire.reserve(fire_front_keys.size());
-        local_updates.reserve(fire_front_keys.size());
 
-        #pragma omp for schedule(dynamic, 64)
-        for (size_t i = 0; i < fire_front_keys.size(); i++) {
-            std::size_t key = fire_front_keys[i];
-            std::uint8_t value = m_fire_front[key];
-            
-            // Recuperação da coordenada lexicográfica da case em fogo
-            LexicoIndices coord = get_lexicographic_from_index(key);
-            // E da puissance do foyer
-            double power = log_factor(value);
-
-            // Verificar se a célula ao sul pode ser contaminada
-            if (coord.row < m_geometry-1) {
-                std::size_t south_key = key + m_geometry;
-                double tirage = pseudo_random(key+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[south_key];
-                double correction = power*log_factor(green_power);
-                if (tirage < alphaSouthNorth*p1*correction && m_fire_map[south_key] == 0) {
-                    local_new_fire.push_back(south_key);
-                }
-            }
-
-            // Verificar se a célula ao norte pode ser contaminada
-            if (coord.row > 0) {
-                std::size_t north_key = key - m_geometry;
-                double tirage = pseudo_random(key*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[north_key];
-                double correction = power*log_factor(green_power);
-                if (tirage < alphaNorthSouth*p1*correction && m_fire_map[north_key] == 0) {
-                    local_new_fire.push_back(north_key);
-                }
-            }
-
-            // Verificar se a célula a leste pode ser contaminada
-            if (coord.column < m_geometry-1) {
-                std::size_t east_key = key + 1;
-                double tirage = pseudo_random(key*13427*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[east_key];
-                double correction = power*log_factor(green_power);
-                if (tirage < alphaEastWest*p1*correction && m_fire_map[east_key] == 0) {
-                    local_new_fire.push_back(east_key);
-                }
-            }
-
-            // Verificar se a célula a oeste pode ser contaminada
-            if (coord.column > 0) {
-                std::size_t west_key = key - 1;
-                double tirage = pseudo_random(key*13427*13427*13427+m_time_step, m_time_step);
-                double green_power = m_vegetation_map[west_key];
-                double correction = power*log_factor(green_power);
-                if (tirage < alphaWestEast*p1*correction && m_fire_map[west_key] == 0) {
-                    local_new_fire.push_back(west_key);
-                }
-            }
-
-            // Atualizando o estado atual do fogo
-            std::uint8_t new_value = value;
-            if (value == 255) {
-                double tirage = pseudo_random(key * 52513 + m_time_step, m_time_step);
-                if (tirage < p2) {
-                    new_value = value >> 1; // Divide por 2
-                    local_updates.push_back({key, new_value});
-                }
-            } else {
-                new_value = value >> 1; // Divide por 2
-                local_updates.push_back({key, new_value});
-            }
-        }
-
-        // Combinar resultados locais com os globais
-        #pragma omp critical
+        // On va tester les cases voisines pour contamination par le feu :
+        if (coord.row < m_geometry-1)
         {
-            new_fire_cells.insert(new_fire_cells.end(), local_new_fire.begin(), local_new_fire.end());
-            updated_cells.insert(updated_cells.end(), local_updates.begin(), local_updates.end());
+            double tirage      = pseudo_random( f.first+m_time_step, m_time_step);
+            double green_power = m_vegetation_map[f.first+m_geometry];
+            double correction  = power*log_factor(green_power);
+            if (tirage < alphaSouthNorth*p1*correction)
+            {
+                m_fire_map[f.first + m_geometry]   = 255.;
+                next_front[f.first + m_geometry] = 255.;
+            }
         }
-    }
 
-    // Aplicar as mudanças em uma única passagem
-    // Primeiro as novas células em chamas
-    for (const auto& key : new_fire_cells) {
-        m_fire_map[key] = 255;
-        m_fire_front[key] = 255;
-    }
-
-    // Depois as atualizações nas células existentes
-    for (const auto& update : updated_cells) {
-        std::size_t key = update.first;
-        std::uint8_t new_value = update.second;
-        
-        m_fire_map[key] = new_value;
-        if (new_value == 0) {
-            m_fire_front.erase(key);
-        } else {
-            m_fire_front[key] = new_value;
+        if (coord.row > 0)
+        {
+            double tirage      = pseudo_random( f.first*13427+m_time_step, m_time_step);
+            double green_power = m_vegetation_map[f.first - m_geometry];
+            double correction  = power*log_factor(green_power);
+            if (tirage < alphaNorthSouth*p1*correction)
+            {
+                m_fire_map[f.first - m_geometry] = 255.;
+                next_front[f.first - m_geometry] = 255.;
+            }
         }
-    }
 
-    // Atualização da vegetação - com menos sincronização
-    std::vector<std::size_t> vegetation_updates;
-    vegetation_updates.reserve(fire_front_keys.size());
-
-    #pragma omp parallel for
-    for (size_t i = 0; i < fire_front_keys.size(); i++) {
-        std::size_t key = fire_front_keys[i];
-        if (m_vegetation_map[key] > 0) {
-            #pragma omp atomic update
-            m_vegetation_map[key] -= 1;
+        if (coord.column < m_geometry-1)
+        {
+            double tirage      = pseudo_random( f.first*13427*13427+m_time_step, m_time_step);
+            double green_power = m_vegetation_map[f.first+1];
+            double correction  = power*log_factor(green_power);
+            if (tirage < alphaEastWest*p1*correction)
+            {
+                m_fire_map[f.first + 1] = 255.;
+                next_front[f.first + 1] = 255.;
+            }
         }
-    }
 
+        if (coord.column > 0)
+        {
+            double tirage      = pseudo_random( f.first*13427*13427*13427+m_time_step, m_time_step);
+            double green_power = m_vegetation_map[f.first - 1];
+            double correction  = power*log_factor(green_power);
+            if (tirage < alphaWestEast*p1*correction)
+            {
+                m_fire_map[f.first - 1] = 255.;
+                next_front[f.first - 1] = 255.;
+            }
+        }
+        // Si le feu est à son max,
+        if (f.second == 255)
+        {   // On regarde si il commence à faiblir pour s'éteindre au bout d'un moment :
+            double tirage = pseudo_random( f.first * 52513 + m_time_step, m_time_step);
+            if (tirage < p2)
+            {
+                m_fire_map[f.first] >>= 1;
+                next_front[f.first] >>= 1;
+            }
+        }
+        else
+        {
+            // Foyer en train de s'éteindre.
+            m_fire_map[f.first] >>= 1;
+            next_front[f.first] >>= 1;
+            if (next_front[f.first] == 0)
+            {
+                next_front.erase(f.first);
+            }
+        }
+
+    }    
+    // A chaque itération, la végétation à l'endroit d'un foyer diminue
+    m_fire_front = next_front;
+    for (auto f : m_fire_front)
+    {
+        if (m_vegetation_map[f.first] > 0)
+            m_vegetation_map[f.first] -= 1;
+    }
     m_time_step += 1;
     return !m_fire_front.empty();
 }
-
+// ====================================================================================================================
 std::size_t   
 Model::get_index_from_lexicographic_indices( LexicoIndices t_lexico_indices  ) const
 {
     return t_lexico_indices.row*this->geometry() + t_lexico_indices.column;
 }
-
+// --------------------------------------------------------------------------------------------------------------------
 auto 
 Model::get_lexicographic_from_index( std::size_t t_global_index ) const -> LexicoIndices
 {
