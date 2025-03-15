@@ -59,8 +59,8 @@ def plot_speedup(time_steps, speedups):
 
 def main():
     # Nome dos arquivos de entrada
-    sequential_file = "temps_seq_300.txt"
-    parallel_file = "temps_paral_300_8.txt"
+    sequential_file = "temps_seq_400.txt"
+    parallel_file = "./400/temps_paral_4_2.txt"
 
     # Ler os dados dos arquivos
     sequential_data = read_time_data(sequential_file)
@@ -75,9 +75,9 @@ def main():
         exit(1)
 
     # Extrair os tempos de simulação
-    sequential_times = sequential_data["Temps_Simulation"].values
-    parallel_times = parallel_data["Temps_Simulation"].values
-    time_steps = sequential_data["TimeStep"].values
+    sequential_times = sequential_data["Temps_Avancement"].values
+    parallel_times = parallel_data["Temps_Avancement"].values
+    time_steps = sequential_data["Temps_Simulation"].values
 
     # Calcular o speedup
     speedups = calculate_speedup(sequential_times, parallel_times)
