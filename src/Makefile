@@ -11,7 +11,7 @@ CXXFLAGS2 = ${CXXFLAGS} -O2 -march=native -Wall
 CXXFLAGS += -O3 -march=native -Wall
 endif
 
-ALL= simulation.exe 
+ALL= simulation2.exe
 
 default:	help
 
@@ -21,10 +21,16 @@ clean:
 	@rm -fr *.o *.exe *~
 
 .cpp.o:
-	$(CXX) $(CXXFLAGS2) -c $^ -o $@	
+	$(CXX) $(CXXFLAGS2) -c $^ -o $@
+
+simulation2.o: simulation2.cpp
+	$(MPICXX) $(CXXFLAGS2) -c $< -o $@
 
 simulation.exe : display.o display.hpp model.o model.hpp simulation.o
 	$(CXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
+
+simulation2.exe : display.o display.hpp model.o model.hpp simulation2.o
+	$(MPICXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
 
 help:
 	@echo "Available targets : "
