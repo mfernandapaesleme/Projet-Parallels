@@ -11,7 +11,7 @@ CXXFLAGS2 = ${CXXFLAGS} -O2 -march=native -Wall
 CXXFLAGS += -O3 -march=native -Wall
 endif
 
-ALL= simulation2.exe
+ALL= simulation.exe simulation2.exe simulation4.exe
 
 default:	help
 
@@ -26,10 +26,19 @@ clean:
 simulation2.o: simulation2.cpp
 	$(MPICXX) $(CXXFLAGS2) -c $< -o $@
 
+simulation4.o: simulation4.cpp
+	$(MPICXX) $(CXXFLAGS2) -c $< -o $@
+
+model4.o: model4.cpp
+	$(MPICXX) $(CXXFLAGS2) -c $< -o $@
+
 simulation.exe : display.o display.hpp model.o model.hpp simulation.o
 	$(CXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
 
 simulation2.exe : display.o display.hpp model.o model.hpp simulation2.o
+	$(MPICXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
+
+simulation4.exe : display.o display.hpp model4.o model4.hpp simulation4.o
 	$(MPICXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
 
 help:
