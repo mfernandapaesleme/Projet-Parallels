@@ -26,6 +26,9 @@ clean:
 simulation.exe : display.o display.hpp model.o model.hpp simulation.o
 	$(CXX) $(CXXFLAGS2) $^ -o $@ $(LIB)	
 
+LIB = -L/usr/local/lib -ltbb -ltbbmalloc -lSDL2
+
+
 help:
 	@echo "Available targets : "
 	@echo "    all            : compile all executables"

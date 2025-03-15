@@ -4,6 +4,11 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <omp.h>
+#include <fstream>
+
+// Inclua o cabeçalho da TBB para medir tempo
+#include <tbb/tick_count.h>
 
 #include "model.hpp"
 #include "display.hpp"
@@ -17,6 +22,7 @@ struct ParamsType
     unsigned discretization{20u};
     std::array<double,2> wind{0.,0.};
     Model::LexicoIndices start{10u,10u};
+    int num_threads{1};
 };
 
 void analyze_arg( int nargs, char* args[], ParamsType& params )
@@ -70,7 +76,7 @@ void analyze_arg( int nargs, char* args[], ParamsType& params )
             std::cerr << "Manque une paire de valeurs pour la direction du vent !" << std::endl;
             exit(EXIT_FAILURE);
         }
-        std::string values =std::string(args[1]);
+        std::string values = std::string(args[1]);
         params.wind[0] = std::stod(values);
         auto pos = values.find(",");
         if (pos == values.size())
@@ -88,13 +94,13 @@ void analyze_arg( int nargs, char* args[], ParamsType& params )
     {
         auto subkey = std::string(key, pos+7);
         params.wind[0] = std::stoul(subkey);
-        auto pos = subkey.find(",");
-        if (pos == subkey.size())
+        auto pos2 = subkey.find(",");
+        if (pos2 == subkey.size())
         {
             std::cerr << "Doit fournir deux valeurs séparées par une virgule pour définir la vitesse" << std::endl;
             exit(EXIT_FAILURE);
         }
-        auto second_value = std::string(subkey, pos+1);
+        auto second_value = std::string(subkey, pos2+1);
         params.wind[1] = std::stod(second_value);
         analyze_arg(nargs-1, &args[1], params);
         return;
@@ -104,10 +110,10 @@ void analyze_arg( int nargs, char* args[], ParamsType& params )
     {
         if (nargs < 2)
         {
-            std::cerr << "Manque une paire de valeurs pour la position du foyer initial !" << std::endl;
+            std::cerr << "Manque une paire de valeurs para a position du foyer initial !" << std::endl;
             exit(EXIT_FAILURE);
         }
-        std::string values =std::string(args[1]);
+        std::string values = std::string(args[1]);
         params.start.column = std::stod(values);
         auto pos = values.find(",");
         if (pos == values.size())
@@ -125,15 +131,28 @@ void analyze_arg( int nargs, char* args[], ParamsType& params )
     {
         auto subkey = std::string(key, pos+8);
         params.start.column = std::stoul(subkey);
-        auto pos = subkey.find(",");
-        if (pos == subkey.size())
+        auto pos2 = subkey.find(",");
+        if (pos2 == subkey.size())
         {
-            std::cerr << "Doit fournir deux valeurs séparées par une virgule pour définir la vitesse" << std::endl;
+            std::cerr << "Doit fournir deux valeurs séparées par uma virgule para definir a posição do fogo" << std::endl;
             exit(EXIT_FAILURE);
         }
-        auto second_value = std::string(subkey, pos+1);
+        auto second_value = std::string(subkey, pos2+1);
         params.start.row = std::stod(second_value);
         analyze_arg(nargs-1, &args[1], params);
+        return;
+    }
+
+    // Nova opção para número de threads
+    if (key == "-t"s || key == "--threads"s)
+    {
+        if (nargs < 2)
+        {
+            std::cerr << "Manque une valeur pour le nombre de threads OpenMP !" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        params.num_threads = std::stoi(args[1]);
+        analyze_arg(nargs-2, &args[2], params);
         return;
     }
 }
@@ -151,7 +170,8 @@ R"RAW(Usage : simulation [option(s)]
     -n, --number_of_cases=N     Nombre n de cases par direction pour la discrétisation
     -w, --wind=VX,VY            Définit le vecteur vitesse du vent (pas de vent par défaut).
     -s, --start=COL,ROW         Définit les indices I,J de la case où commence l'incendie (milieu de la carte par défaut)
-)RAW";
+    -t, --threads=N             Définit le nombre de threads OpenMP à utiliser (défaut: 1)
+    )RAW";
         exit(EXIT_SUCCESS);
     }
     ParamsType params;
@@ -179,6 +199,12 @@ bool check_params(ParamsType& params)
         std::cerr << "[ERREUR FATALE] Mauvais indices pour la position initiale du foyer" << std::endl;
         flag = false;
     }
+
+    if (params.num_threads <= 0)
+    {
+        std::cerr << "[ERREUR FATALE] Le nombre de threads doit être positif et non nul !" << std::endl;
+        flag = false;
+    }
     
     return flag;
 }
@@ -189,27 +215,95 @@ void display_params(ParamsType const& params)
               << "\tTaille du terrain : " << params.length << std::endl 
               << "\tNombre de cellules par direction : " << params.discretization << std::endl 
               << "\tVecteur vitesse : [" << params.wind[0] << ", " << params.wind[1] << "]" << std::endl
-              << "\tPosition initiale du foyer (col, ligne) : " << params.start.column << ", " << params.start.row << std::endl;
+              << "\tPosition initiale du foyer (col, ligne) : " << params.start.column << ", " << params.start.row << std::endl
+              << "\tNombre de threads OpenMP : " << params.num_threads << std::endl;
 }
 
 int main( int nargs, char* args[] )
 {
+    // 1) Lê e valida parâmetros
     auto params = parse_arguments(nargs-1, &args[1]);
     display_params(params);
     if (!check_params(params)) return EXIT_FAILURE;
 
+    // 2) Define o número de threads para OpenMP (independente da TBB)
+    omp_set_num_threads(std::min(params.num_threads, omp_get_max_threads()));
+    
+    // Informações sobre hardware
+    std::cout << "Information sur l'hardware:" << std::endl;
+    std::cout << "\tNúmero máximo de threads OpenMP disponibles: " << omp_get_max_threads() << std::endl;
+    std::cout << "\tNúmero de processadores physiques: " << omp_get_num_procs() << std::endl;
+
+    // 3) Cria o Displayer e o Model
     auto displayer = Displayer::init_instance( params.discretization, params.discretization );
-    auto simu = Model( params.length, params.discretization, params.wind,
-                       params.start);
+    auto simu = Model( params.length, 
+                       params.discretization, 
+                       params.wind,
+                       params.start );
+
     SDL_Event event;
-    while (simu.update())
+
+    // 4) Abre arquivo de saída para registrar os tempos
+    std::ofstream file("temps.txt");
+    file << "TimeStep Temps_Avancement Temps_Affichage Temps_Simulation\n"; 
+
+    // 5) Marcador de tempo inicial (TBB)
+    tbb::tick_count start_total = tbb::tick_count::now();
+
+    // 6) Loop principal de simulação
+    while (true)
     {
-        if ((simu.time_step() & 31) == 0) 
-            std::cout << "Time step " << simu.time_step() << "\n===============" << std::endl;
-        displayer->update( simu.vegetal_map(), simu.fire_map() );
-        if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
+        // Processa eventos (fechar janela, etc.)
+        while (SDL_PollEvent(&event))
+        {
+            if (event.type == SDL_QUIT)
+                return EXIT_SUCCESS;
+        }
+
+        // ---------------------------
+        // a) Tempo de Avanço (update)
+        // ---------------------------
+        tbb::tick_count start_update = tbb::tick_count::now();
+        bool isrunning = simu.update();  
+        double Temps_Avancement = (tbb::tick_count::now() - start_update).seconds();
+
+        if(!isrunning) {
+            // Se o fogo acabou, sai do loop
             break;
-        std::this_thread::sleep_for(0.1s);
+        }
+
+        // Exemplo de exibir o time_step a cada 32 iterações
+        if ((simu.time_step() & 31) == 0) {
+            std::cout << "Time step " << simu.time_step() << "\n===============" << std::endl;
+        }
+
+        // ------------------------------
+        // b) Tempo de Exibição (display)
+        // ------------------------------
+        tbb::tick_count start_display = tbb::tick_count::now();
+        displayer->update(simu.vegetal_map(), simu.fire_map());
+        double Temps_Affichage = (tbb::tick_count::now() - start_display).seconds();
+
+        // (opcional) Pausa de 50ms para não “atropelar” a CPU
+        std::this_thread::sleep_for(50ms);
+
+        // ------------------------------
+        // c) Tempo total do Time Step
+        // ------------------------------
+        double Temps_Simulation = (tbb::tick_count::now() - start_total).seconds();
+
+        // 7) Registra os tempos no arquivo
+        file << simu.time_step()        << " "
+             << Temps_Avancement       << " "
+             << Temps_Affichage        << " "
+             << Temps_Simulation       << "\n";
     }
+
+    file.close();
+
+    // 8) Tempo total da simulação
+    double elapsed_total = (tbb::tick_count::now() - start_total).seconds();
+    std::cout << "Temps total de la simulation: " << elapsed_total << " secondes\n";
+
     return EXIT_SUCCESS;
 }

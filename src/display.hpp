@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <memory>
 #if defined(__linux__)
-#  include <SDL2/SDL.h>
+#include <SDL2/SDL.h>
 #endif
 class Displayer
 {

@@ -3,6 +3,12 @@
 #include <iostream>
 #include "model.hpp"
 
+#include <tbb/parallel_for.h>
+#include <tbb/blocked_range.h>
+#include <tbb/combinable.h>
+#include <vector>
+#include <unordered_map>
+
 
 namespace
 {
@@ -75,94 +81,105 @@ Model::Model( double t_length, unsigned t_discretization, std::array<double,2> t
 bool 
 Model::update()
 {
-    auto next_front = m_fire_front;
-    for (auto f : m_fire_front)
-    {
-        // Récupération de la coordonnée lexicographique de la case en feu :
-        LexicoIndices coord = get_lexicographic_from_index(f.first);
-        // Et de la puissance du foyer
-        double        power = log_factor(f.second);
-
-
-        // On va tester les cases voisines pour contamination par le feu :
-        if (coord.row < m_geometry-1)
-        {
-            double tirage      = pseudo_random( f.first+m_time_step, m_time_step);
-            double green_power = m_vegetation_map[f.first+m_geometry];
-            double correction  = power*log_factor(green_power);
-            if (tirage < alphaSouthNorth*p1*correction)
-            {
-                m_fire_map[f.first + m_geometry]   = 255.;
-                next_front[f.first + m_geometry] = 255.;
+    
+    std::vector<std::pair<std::size_t, unsigned char>> fire_front_vec(m_fire_front.begin(), m_fire_front.end());
+    
+    // Criar um container thread-local para acumular as atualizações do fire front
+    tbb::combinable<std::unordered_map<std::size_t, unsigned char>> local_next_front(
+        []() { return std::unordered_map<std::size_t, unsigned char>(); }
+    );
+    
+    // Processa cada elemento do fire front em paralelo
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, fire_front_vec.size()),
+        [&](const tbb::blocked_range<size_t>& r) {
+            // Obter o container local para esta thread
+            auto &local_map = local_next_front.local();
+            
+            for (size_t i = r.begin(); i != r.end(); ++i) {
+                auto f = fire_front_vec[i];
+                LexicoIndices coord = get_lexicographic_from_index(f.first);
+                double power = log_factor(f.second);
+                
+                // Processa a vizinhança: Sul
+                if (coord.row < m_geometry - 1) {
+                    double tirage = pseudo_random(f.first + m_time_step, m_time_step);
+                    double green_power = m_vegetation_map[f.first + m_geometry];
+                    double correction = power * log_factor(green_power);
+                    if (tirage < alphaSouthNorth * p1 * correction) {
+                        m_fire_map[f.first + m_geometry] = 255;
+                        local_map[f.first + m_geometry] = 255;
+                    }
+                }
+                
+                // Norte
+                if (coord.row > 0) {
+                    double tirage = pseudo_random(f.first * 13427 + m_time_step, m_time_step);
+                    double green_power = m_vegetation_map[f.first - m_geometry];
+                    double correction = power * log_factor(green_power);
+                    if (tirage < alphaNorthSouth * p1 * correction) {
+                        m_fire_map[f.first - m_geometry] = 255;
+                        local_map[f.first - m_geometry] = 255;
+                    }
+                }
+                
+                // Leste
+                if (coord.column < m_geometry - 1) {
+                    double tirage = pseudo_random(f.first * 13427 * 13427 + m_time_step, m_time_step);
+                    double green_power = m_vegetation_map[f.first + 1];
+                    double correction = power * log_factor(green_power);
+                    if (tirage < alphaEastWest * p1 * correction) {
+                        m_fire_map[f.first + 1] = 255;
+                        local_map[f.first + 1] = 255;
+                    }
+                }
+                
+                // Oeste
+                if (coord.column > 0) {
+                    double tirage = pseudo_random(f.first * 13427 * 13427 * 13427 + m_time_step, m_time_step);
+                    double green_power = m_vegetation_map[f.first - 1];
+                    double correction = power * log_factor(green_power);
+                    if (tirage < alphaWestEast * p1 * correction) {
+                        m_fire_map[f.first - 1] = 255;
+                        local_map[f.first - 1] = 255;
+                    }
+                }
+                
+                // Processa o enfraquecimento do fogo
+                if (f.second == 255) {
+                    double tirage = pseudo_random(f.first * 52513 + m_time_step, m_time_step);
+                    if (tirage < p2) {
+                        m_fire_map[f.first] >>= 1;
+                        local_map[f.first] = f.second >> 1;
+                    }
+                } else {
+                    m_fire_map[f.first] >>= 1;
+                    local_map[f.first] = f.second >> 1;
+                    // Se o fogo se extinguir (valor zero), não o adicionamos (ou removeremos depois da combinação)
+                }
             }
         }
-
-        if (coord.row > 0)
-        {
-            double tirage      = pseudo_random( f.first*13427+m_time_step, m_time_step);
-            double green_power = m_vegetation_map[f.first - m_geometry];
-            double correction  = power*log_factor(green_power);
-            if (tirage < alphaNorthSouth*p1*correction)
-            {
-                m_fire_map[f.first - m_geometry] = 255.;
-                next_front[f.first - m_geometry] = 255.;
-            }
+    );
+    
+    // Combina os resultados dos containers locais em um único container global para o fire front
+    std::unordered_map<std::size_t, unsigned char> next_front;
+    local_next_front.combine_each([&](const std::unordered_map<std::size_t, unsigned char>& local_map) {
+        for (const auto &elem : local_map) {
+            next_front[elem.first] = elem.second;
         }
-
-        if (coord.column < m_geometry-1)
-        {
-            double tirage      = pseudo_random( f.first*13427*13427+m_time_step, m_time_step);
-            double green_power = m_vegetation_map[f.first+1];
-            double correction  = power*log_factor(green_power);
-            if (tirage < alphaEastWest*p1*correction)
-            {
-                m_fire_map[f.first + 1] = 255.;
-                next_front[f.first + 1] = 255.;
-            }
-        }
-
-        if (coord.column > 0)
-        {
-            double tirage      = pseudo_random( f.first*13427*13427*13427+m_time_step, m_time_step);
-            double green_power = m_vegetation_map[f.first - 1];
-            double correction  = power*log_factor(green_power);
-            if (tirage < alphaWestEast*p1*correction)
-            {
-                m_fire_map[f.first - 1] = 255.;
-                next_front[f.first - 1] = 255.;
-            }
-        }
-        // Si le feu est à son max,
-        if (f.second == 255)
-        {   // On regarde si il commence à faiblir pour s'éteindre au bout d'un moment :
-            double tirage = pseudo_random( f.first * 52513 + m_time_step, m_time_step);
-            if (tirage < p2)
-            {
-                m_fire_map[f.first] >>= 1;
-                next_front[f.first] >>= 1;
-            }
-        }
-        else
-        {
-            // Foyer en train de s'éteindre.
-            m_fire_map[f.first] >>= 1;
-            next_front[f.first] >>= 1;
-            if (next_front[f.first] == 0)
-            {
-                next_front.erase(f.first);
-            }
-        }
-
-    }    
-    // A chaque itération, la végétation à l'endroit d'un foyer diminue
-    m_fire_front = next_front;
-    for (auto f : m_fire_front)
-    {
+    });
+    
+    // Atualiza o container global do fire front
+    m_fire_front = std::move(next_front);
+    
+    // Atualiza a vegetação nas posições onde há fogo
+    for(auto &f : m_fire_front) {
         if (m_vegetation_map[f.first] > 0)
             m_vegetation_map[f.first] -= 1;
     }
+    
     m_time_step += 1;
     return !m_fire_front.empty();
+
 }
 // ====================================================================================================================
 std::size_t   
