@@ -5,8 +5,9 @@
 #include <thread>
 #include <chrono>
 #include <mpi.h>
-#include "model.hpp"
-#include "display.hpp"
+#include <fstream>
+#include "model.hpp"     // Contient la classe Model et ses méthodes (vegetal_map(), fire_map(), update(), etc.)
+#include "display.hpp"   // Pour l'affichage via SDL
 
 using namespace std::string_literals;
 using namespace std::chrono_literals;
@@ -19,7 +20,7 @@ struct ParamsType {
     Model::LexicoIndices start {10u,10u};   // Position initiale du foyer (colonne, ligne)
 };
 
-// Fonction récursive d'analyse des arguments de la ligne de commande
+// --- Fonctions d'analyse des arguments (identiques à l'exemple précédent) ---
 void analyze_arg(int nargs, char* args[], ParamsType& params) {
     if (nargs == 0) return;
     std::string key(args[0]);
@@ -115,7 +116,6 @@ void analyze_arg(int nargs, char* args[], ParamsType& params) {
     }
 }
 
-// Fonction de parsing des arguments
 ParamsType parse_arguments(int nargs, char* args[]) {
     if (nargs == 0) return {};
     if (std::string(args[0]) == "--help"s || std::string(args[0]) == "-h"s) {
@@ -135,7 +135,6 @@ R"RAW(Usage : simulation [option(s)]
     return params;
 }
 
-// Vérification de la validité des paramètres
 bool check_params(const ParamsType& params) {
     bool flag = true;
     if (params.length <= 0) {
@@ -153,7 +152,6 @@ bool check_params(const ParamsType& params) {
     return flag;
 }
 
-// Affichage des paramètres de simulation
 void display_params(const ParamsType& params) {
     std::cout << "Paramètres de simulation :" << std::endl
               << "\tTaille du terrain : " << params.length << " km" << std::endl
@@ -171,7 +169,7 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
     
-    // Initialisation de MPI
+    // Initialisation de MPI et duplication du communicateur global
     MPI_Init(&argc, &argv);
     MPI_Comm globCom;
     MPI_Comm_dup(MPI_COMM_WORLD, &globCom);
@@ -182,6 +180,8 @@ int main(int argc, char* argv[]) {
 
     int global_size = params.discretization * params.discretization;
     
+    // Dans cet exemple, nous supposons que le processus 0 est dédié à l'affichage
+    // et le processus 1 (ou tous les autres) font la simulation.
     if (rank == 0) {
         // Processus d'affichage (maître global)
         auto displayer = Displayer::init_instance(params.discretization, params.discretization);
@@ -189,18 +189,42 @@ int main(int argc, char* argv[]) {
         std::vector<unsigned char> global_fire_map(global_size);
         std::vector<unsigned char> global_veg_map(global_size);
         
+        // Ouverture du fichier pour enregistrer les temps
+        std::ofstream file("temps.txt");
+        file << "TimeStep Temps_Update Temps_Display Temps_Total\n";
+        
         bool loop = true;
+        int time_step = 0;
+        double start_total = MPI_Wtime();
+        
         while(loop) {
             int request = 1;
-            // Demande de mise à jour des données au processus de calcul (rang 1)
+            // Demande de mise à jour des données au processus de calcul (ici, rang 1)
             MPI_Send(&request, 1, MPI_INT, 1, 0, globCom);
             
             // Réception des cartes globales depuis le processus de calcul
             MPI_Recv(global_fire_map.data(), global_size, MPI_UNSIGNED_CHAR, 1, 0, globCom, MPI_STATUS_IGNORE);
             MPI_Recv(global_veg_map.data(), global_size, MPI_UNSIGNED_CHAR, 1, 1, globCom, MPI_STATUS_IGNORE);
             
-            // Mise à jour de l'affichage via SDL
+            // Réception du temps d'itération (update) depuis le processus de calcul
+            double iter_time = 0.0;
+            MPI_Recv(&iter_time, 1, MPI_DOUBLE, 1, 2, globCom, MPI_STATUS_IGNORE);
+            
+            // Mesure du temps d'affichage avec MPI_Wtime()
+            double start_display = MPI_Wtime();
             displayer->update(global_veg_map, global_fire_map);
+            double end_display = MPI_Wtime();
+            
+            double display_time = end_display - start_display;
+            double total_time = MPI_Wtime() - start_total;
+            
+            // Enregistrement dans le fichier
+            file << time_step << " " 
+                 << iter_time << " " 
+                 << display_time << " " 
+                 << total_time << "\n";
+            
+            std::cout << "Time step " << time_step << "\n===============" << std::endl;
             
             // Gestion des événements SDL (fermeture de la fenêtre)
             SDL_Event event;
@@ -210,23 +234,22 @@ int main(int argc, char* argv[]) {
                 loop = false;
             }
             std::this_thread::sleep_for(100ms);
+            time_step++;
         }
+        file.close();
         SDL_Quit();
     }
     else {
         // Processus de calcul (simulation)
         Model simu(params.length, params.discretization, params.wind, params.start);
         bool continue_simulation = true;
-        
-        // Variables pour la mesure du temps
-        double total_time = 0.0;
+        double total_iter_time = 0.0;
         int iter_count = 0;
         
         while (continue_simulation && simu.update()) {
-            // Début de l'itération : mesure du temps
             double iter_start = MPI_Wtime();
             
-            // Vérification non bloquante d'un éventuel signal d'arrêt venant du processus d'affichage
+            // Vérification non bloquante d'un signal d'arrêt venant du processus d'affichage
             int flag = 0;
             MPI_Status status;
             MPI_Iprobe(0, 0, globCom, &flag, &status);
@@ -243,19 +266,20 @@ int main(int argc, char* argv[]) {
             MPI_Send(simu.fire_map().data(), global_size, MPI_UNSIGNED_CHAR, 0, 0, globCom);
             MPI_Send(simu.vegetal_map().data(), global_size, MPI_UNSIGNED_CHAR, 0, 1, globCom);
             
-            // Fin de l'itération : calcul du temps écoulé
             double iter_end = MPI_Wtime();
-            total_time += (iter_end - iter_start);
+            double iter_time = iter_end - iter_start;
+            total_iter_time += iter_time;
             iter_count++;
             
-            // Pause optionnelle pour stabiliser l'affichage
+            // Envoi du temps d'itération au processus d'affichage (tag 2)
+            MPI_Send(&iter_time, 1, MPI_DOUBLE, 0, 2, globCom);
+            
             std::this_thread::sleep_for(100ms);
         }
         
-        // Calcul et affichage du temps moyen par itération (calcul + communication)
-        double average_time = (iter_count > 0) ? (total_time / iter_count) : 0.0;
+        double average_iter_time = (iter_count > 0) ? (total_iter_time / iter_count) : 0.0;
         std::cout << "Temps moyen par itération (calcul + communication) : " 
-                  << average_time << " secondes" << std::endl;
+                  << average_iter_time << " secondes" << std::endl;
     }
     
     MPI_Finalize();

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <thread>
 #include <chrono>
+#include <fstream>
 #include "model4.hpp"    // Reutilizamos as funções de parse e check dos parâmetros
 #include "display.hpp"  // Para visualização (SDL)
 
@@ -14,7 +15,7 @@ using namespace std::chrono_literals;
 struct ParamsType
 {
     double length{1.};
-    unsigned discretization{240u};
+    unsigned discretization{300u};
     std::array<double,2> wind{0.,0.};
     Model::LexicoIndices start{10u,10u};
 };
@@ -271,7 +272,14 @@ int main(int argc, char* argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // Processa os argumentos (argv[0] é o nome do programa)
+    // Ouverture du fichier pour enregistrer les temps (seulement sur le processus 0)
+    std::ofstream file;
+    if (rank == 0) {
+        file.open("temps.txt");
+        file << "TimeStep Temps_Avancement Temps_Affichage Temps_Simulation\n";
+    }
+    
+    // Traitement des arguments
     auto params = parse_arguments(argc - 1, &argv[1]);
     if (!check_params(params)) {
         MPI_Finalize();
@@ -282,7 +290,6 @@ int main(int argc, char* argv[]) {
         display_params(params);
     }
     
-    // Como a grade é quadrada, usamos "discretization" para definir a dimensão
     int global_dim = params.discretization;
     if (global_dim % size != 0) {
         if (rank == 0)
@@ -292,10 +299,9 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
     
-    // Cria a instância do ModelMPI para este processo
+    // Création de l'instance du modèle MPI (ModelMPI)
     ModelMPI model(params.length, global_dim, params.wind, params.start, rank, size);
     
-    // Inicializa o displayer (SDL) somente no processo 0
     std::shared_ptr<Displayer> displayer;
     if (rank == 0)
         displayer = Displayer::init_instance(global_dim, global_dim);
@@ -303,20 +309,26 @@ int main(int argc, char* argv[]) {
     bool global_continue = true;
     int time_step = 0;
     
+    // Début de la mesure du temps total avec MPI_Wtime()
+    double start_total = MPI_Wtime();
+    
     while (global_continue) {
+        double start_update = 0.0, end_update = 0.0, start_display = 0.0, end_display = 0.0;
+        if (rank == 0)
+            start_update = MPI_Wtime();
+        
         model.update();
         
-        // Verifica se há fogo ativo localmente
+        if (rank == 0)
+            end_update = MPI_Wtime();
+        
         bool local_active = model.localFireActive();
-        // Usar MPI_LOR para que a simulação continue se algum processo ainda tiver fogo ativo
-        MPI_Allreduce(&local_active, &global_continue, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD); 
-
-        // Coleta dados para visualização
+        MPI_Allreduce(&local_active, &global_continue, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD);
+        
         if (rank == 0) {
             std::vector<std::uint8_t> full_fire(global_dim * global_dim, 0);
             std::vector<std::uint8_t> full_vegetation(global_dim * global_dim, 0);
             
-            // Dados do processo 0 (sem ghost cells)
             std::vector<std::uint8_t> local_fire, local_vegetation;
             model.getLocalData(local_vegetation, local_fire);
             std::copy(local_fire.begin(), local_fire.end(), full_fire.begin());
@@ -330,12 +342,24 @@ int main(int argc, char* argv[]) {
                        full_vegetation.data(), local_size, MPI_UNSIGNED_CHAR,
                        0, MPI_COMM_WORLD);
             
+            start_display = MPI_Wtime();
             displayer->update(full_vegetation, full_fire);
+            end_display = MPI_Wtime();
+            
+            double elapsed_update = end_update - start_update;
+            double elapsed_display = end_display - start_display;
+            double elapsed_total = MPI_Wtime() - start_total;
+            
+            file << time_step << " " 
+                 << elapsed_update << " " 
+                 << elapsed_display << " " 
+                 << elapsed_total << "\n";
+            
             std::cout << "Time step " << time_step << "\n===============" << std::endl;
         } else {
+            int local_size = model.getLocalDim() * model.getGlobalDim();
             std::vector<std::uint8_t> local_fire, local_vegetation;
             model.getLocalData(local_vegetation, local_fire);
-            int local_size = model.getLocalDim() * model.getGlobalDim();
             MPI_Gather(local_fire.data(), local_size, MPI_UNSIGNED_CHAR,
                        nullptr, local_size, MPI_UNSIGNED_CHAR,
                        0, MPI_COMM_WORLD);
@@ -345,7 +369,11 @@ int main(int argc, char* argv[]) {
         }
         
         time_step++;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(100ms);
+    }
+    
+    if (rank == 0) {
+        file.close();
     }
     
     MPI_Finalize();
