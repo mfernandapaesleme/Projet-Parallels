@@ -236,7 +236,7 @@ int main( int nargs, char* args[] )
     SDL_Event event;
 
     // Utilisation d'un fichier txt pour analyser les temps
-    std::ofstream file("sequential.log");
+    std::ofstream file("temps.log");
     file << "TimeStep Temps_Avancement Temps_Affichage Temps_Simulation\n"; 
 
      // Mesure temps total de la simulation

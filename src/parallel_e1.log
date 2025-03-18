@@ -1,0 +1,10 @@
+Parametres définis pour la simulation : 
+	Taille du terrain : 1
+	Nombre de cellules par direction : 300
+	Vecteur vitesse : [0, 0]
+	Position initiale du foyer (col, ligne) : 150, 150
+	Nombre de threads OpenMP : 2
+Information sur l'hardware:
+	Número máximo de threads OpenMP disponíveis: 2
+	Número de processadores físicos: 4
+Segmentation fault

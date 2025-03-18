@@ -11,7 +11,7 @@ def calcular_sem_outliers(data):
     return data[(data >= lower_bound) & (data <= upper_bound)]
 
 # Ler os dados do arquivo
-data = np.loadtxt("temps.txt", skiprows=1)
+data = np.loadtxt("temps.log", skiprows=1)
 
 time_step = data[:, 0]
 tempo_atualizacao = data[:, 1]  # Mantendo todos os dados para o gráfico

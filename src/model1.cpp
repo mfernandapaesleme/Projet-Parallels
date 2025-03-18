@@ -104,7 +104,7 @@ bool Model::update()
         local_new_fire.reserve(fire_front_keys.size());
         local_updates.reserve(fire_front_keys.size());
 
-        #pragma omp for schedule(dynamic, 64)
+        #pragma omp for schedule(dynamic, 64) //load balacing
         for (size_t i = 0; i < fire_front_keys.size(); i++) {
             std::size_t key = fire_front_keys[i];
             std::uint8_t value = m_fire_front[key];
@@ -204,7 +204,7 @@ bool Model::update()
     std::vector<std::size_t> vegetation_updates;
     vegetation_updates.reserve(fire_front_keys.size());
 
-    #pragma omp parallel for
+    #pragma omp parallel for 
     for (size_t i = 0; i < fire_front_keys.size(); i++) {
         std::size_t key = fire_front_keys[i];
         if (m_vegetation_map[key] > 0) {
@@ -214,17 +214,7 @@ bool Model::update()
     }
 
     m_time_step += 1;
-    if (!m_fire_front.empty())
-    {
-        std::cout << "Fogo ainda ativo, continuando a simulação." << std::endl;
-        return true;
-    }
-    else
-    {
-        std::cout << "Fogo extinto, encerrando a simulação." << std::endl;
-        return false;
-    }
-    // return !m_fire_front.empty();
+    return !m_fire_front.empty();
 }
 
 std::size_t   
